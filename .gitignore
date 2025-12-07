@@ -1,0 +1,29 @@
+# ==== BACKEND .NET ====
+**/bin/
+**/obj/
+**/publish/
+*.user
+*.rsuser
+*.suo
+
+# No subir settings generados en publish
+backend/InviteAPI/bin/
+backend/InviteAPI/obj/
+
+# Puedes ignorar los JSON de datos en bin/publish
+backend/InviteAPI/bin/**/Data/
+backend/InviteAPI/obj/**/Data/
+
+# Dejar SOLO los JSON "fuente" si quieres versionarlos:
+# backend/InviteAPI/Data/invites.json
+# backend/InviteAPI/Data/settings.json
+
+# ==== FRONTEND (React + Vite) ====
+frontend/weddingrm/node_modules/
+frontend/weddingrm/dist/
+frontend/weddingrm/.vite/
+frontend/weddingrm/.env
+
+# ==== VARIOS ====
+.DS_Store
+Thumbs.db

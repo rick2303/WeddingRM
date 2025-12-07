@@ -1,0 +1,27 @@
+@import "tailwindcss";
+@import url("https://fonts.googleapis.com/css2?family=Great+Vibes&display=swap");
+
+/* Estilos globales mínimos */
+body {
+  margin: 0;
+  padding: 0;
+  background-color: #f8fafc; /* parecido a bg-slate-50 */
+  color: #0f172a; /* parecido a text-slate-900 */
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.25s ease-out;
+}

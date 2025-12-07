@@ -1,0 +1,34 @@
+﻿[
+  {
+    "id": "36e36d3a-ad97-4b5c-ab35-69ce010dc7bc",
+    "name": "savingsWF",
+    "phone": "\u002B13056009012",
+    "token": "aad301965b",
+    "status": "Rejected",
+    "expiresAt": "2025-12-29T04:59:59Z"
+  },
+  {
+    "id": "f1ea9535-e5ca-4e7e-b7fd-43b500ccb057",
+    "name": "kkasda",
+    "phone": "\u002B13056009012",
+    "token": "d8cba9c889",
+    "status": "Pending",
+    "expiresAt": "2025-12-29T04:59:59Z"
+  },
+  {
+    "id": "fef8df0d-a3ae-4791-8dfd-05d0701f7179",
+    "name": "Franky Interiano",
+    "phone": "\u002B13056009012",
+    "token": "676d6518b1",
+    "status": "Confirmed",
+    "expiresAt": "2025-12-29T04:59:59Z"
+  },
+  {
+    "id": "c05adb04-d8ec-46af-b608-38bc462baa6e",
+    "name": "Gloria Garcia",
+    "phone": "\u002B17867681507",
+    "token": "1c0e48e2c3",
+    "status": "Confirmed",
+    "expiresAt": "2025-12-29T04:59:59Z"
+  }
+]
