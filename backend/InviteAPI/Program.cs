@@ -14,17 +14,18 @@ var builder = WebApplication.CreateBuilder(args);
 // =======================
 //  Configuración de CORS
 // =======================
-var frontendOrigin =
-    builder.Configuration["FrontendOrigin"]
-    ?? "http://localhost:5173";
+var originsFromConfig = builder.Configuration["FrontendOrigins"]; 
 
+var allowedOrigins = originsFromConfig?
+    .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+    ?? new[] { "http://localhost:5173" };
 
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("FrontendPolicy", policy =>
     {
         policy
-            .WithOrigins(frontendOrigin, "http://localhost:5173")
+            .WithOrigins(allowedOrigins)
             .AllowAnyHeader()
             .AllowAnyMethod()
             .AllowCredentials();
