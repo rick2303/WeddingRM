@@ -6,6 +6,8 @@ using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
+using Npgsql;
+using Dapper;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -64,23 +66,19 @@ builder.Services
 builder.Services.AddAuthorization();
 
 // =======================
-//  Repositorio de invites
+//  Repositorios con BD
 // =======================
-var dataDir = Path.Combine(builder.Environment.ContentRootPath, "Data");
-Directory.CreateDirectory(dataDir);
-var invitesFilePath = Path.Combine(dataDir, "invites.json");
+var connectionString =
+    builder.Configuration.GetConnectionString("DefaultConnection")
+    ?? builder.Configuration["DatabaseConnection"]
+    ?? throw new Exception("Database connection string missing");
 
 builder.Services.AddSingleton<IInviteRepository>(_ =>
-    new FileInviteRepository(invitesFilePath));
+    new DbInviteRepository(connectionString));
 
-// =======================
-//  Repositorio de settings
-//   (info de evento + imagen)
-// =======================
-// >>> NUEVO
-var settingsFilePath = Path.Combine(dataDir, "settings.json");
 builder.Services.AddSingleton<ISettingsRepository>(_ =>
-    new FileSettingsRepository(settingsFilePath));
+    new DbSettingsRepository(connectionString));
+
 
 // Swagger
 builder.Services.AddEndpointsApiExplorer();
@@ -184,23 +182,12 @@ app.MapGet("/api/auth/me", (ClaimsPrincipal user) =>
 // -----------------------
 //  SETTINGS (EXPIRACIÓN)
 // -----------------------
-
 // GET global expiration
 app.MapGet("/api/settings/invite-expiration", (IInviteRepository repo) =>
 {
-    if (repo is FileInviteRepository fileRepo)
-    {
-        var current = fileRepo.GetGlobalExpiration();
-        if (current is null)
-        {
-            // Sin contenido, frontend lo soporta
-            return Results.NoContent();
-        }
-
-        return Results.Ok(new { expiresAt = current.Value });
-    }
-
-    return Results.NoContent();
+    var current = repo.GetGlobalExpiration();
+    if (current is null) return Results.NoContent();
+    return Results.Ok(new { expiresAt = current.Value });
 })
 .RequireAuthorization()
 .WithTags("Settings");
@@ -209,25 +196,13 @@ app.MapGet("/api/settings/invite-expiration", (IInviteRepository repo) =>
 app.MapPut("/api/settings/invite-expiration",
     (InviteExpirationRequest req, IInviteRepository repo) =>
     {
-        if (repo is not FileInviteRepository fileRepo)
-        {
-            return Results.BadRequest(new { message = "Repositorio no soporta expiración global." });
-        }
-
         var utc = DateTime.SpecifyKind(req.ExpiresAt, DateTimeKind.Utc);
-
-        // Setear para TODAS las invitaciones y guardar
-        fileRepo.SetGlobalExpiration(utc);
-
+        repo.SetGlobalExpiration(utc);
         return Results.Ok(new { expiresAt = utc });
     })
 .RequireAuthorization()
 .WithTags("Settings");
 
-// -----------------------
-//  SETTINGS (EVENTO)
-// -----------------------
-// >>> NUEVO
 
 // GET público de info de evento
 app.MapGet("/api/settings/event", (ISettingsRepository repo) =>
@@ -483,7 +458,12 @@ public interface IInviteRepository
     Invite Add(string name, string phone);
     Invite? Update(Guid id, string? name, string? phone, InviteStatus? status);
     bool Remove(Guid id);
+
+    // Expiración global
+    DateTime? GetGlobalExpiration();
+    void SetGlobalExpiration(DateTime expiresAtUtc);
 }
+
 
 // =======================
 //   VALIDACIONES
@@ -508,7 +488,7 @@ public static class InviteValidation
 // =======================
 //   FILE-BASED REPO
 // =======================
-
+/*
 public class FileInviteRepository : IInviteRepository
 {
     private readonly string _filePath;
@@ -684,6 +664,122 @@ public class FileInviteRepository : IInviteRepository
         File.WriteAllText(_filePath, json, Encoding.UTF8);
     }
 }
+*/
+public class DbInviteRepository : IInviteRepository
+{
+    private readonly string _connectionString;
+
+    public DbInviteRepository(string connectionString)
+    {
+        _connectionString = connectionString;
+    }
+
+    private NpgsqlConnection GetConnection() => new(_connectionString);
+
+    public IEnumerable<Invite> GetAll()
+    {
+        using var conn = GetConnection();
+        const string sql = @"
+            SELECT
+                id,
+                name,
+                phone,
+                token,
+                status,
+                expires_at AS ""ExpiresAt""
+            FROM invites
+            ORDER BY created_at NULLS LAST, id";
+        // Si no tienes created_at, quita esa parte del ORDER BY
+        return conn.Query<Invite>(sql).ToList();
+    }
+
+    public Invite? GetById(Guid id)
+    {
+        using var conn = GetConnection();
+        const string sql = @"
+            SELECT id, name, phone, token, status, expires_at AS ""ExpiresAt""
+            FROM invites
+            WHERE id = @id";
+        return conn.QuerySingleOrDefault<Invite>(sql, new { id });
+    }
+
+    public Invite? GetByToken(string token)
+    {
+        using var conn = GetConnection();
+        const string sql = @"
+            SELECT id, name, phone, token, status, expires_at AS ""ExpiresAt""
+            FROM invites
+            WHERE token = @token";
+        return conn.QuerySingleOrDefault<Invite>(sql, new { token });
+    }
+
+    public DateTime? GetGlobalExpiration()
+    {
+        using var conn = GetConnection();
+        const string sql = @"SELECT MAX(expires_at) FROM invites";
+        return conn.ExecuteScalar<DateTime?>(sql);
+    }
+
+    public void SetGlobalExpiration(DateTime expiresAtUtc)
+    {
+        using var conn = GetConnection();
+        const string sql = @"UPDATE invites SET expires_at = @expiresAtUtc";
+        conn.Execute(sql, new { expiresAtUtc });
+    }
+
+    public Invite Add(string name, string phone)
+    {
+        var global = GetGlobalExpiration();
+        var expiresAt = global ?? DateTime.UtcNow.AddDays(7);
+
+        var invite = new Invite
+        {
+            Id = Guid.NewGuid(),
+            Name = name,
+            Phone = phone,
+            Token = Guid.NewGuid().ToString("N")[..10],
+            Status = InviteStatus.Pending,
+            ExpiresAt = expiresAt
+        };
+
+        using var conn = GetConnection();
+        const string sql = @"
+            INSERT INTO invites (id, name, phone, token, status, expires_at)
+            VALUES (@Id, @Name, @Phone, @Token, @Status, @ExpiresAt)";
+        conn.Execute(sql, invite);
+
+        return invite;
+    }
+
+    public Invite? Update(Guid id, string? name, string? phone, InviteStatus? status)
+    {
+        var invite = GetById(id);
+        if (invite is null) return null;
+
+        if (!string.IsNullOrWhiteSpace(name)) invite.Name = name;
+        if (!string.IsNullOrWhiteSpace(phone)) invite.Phone = phone;
+        if (status.HasValue) invite.Status = status.Value;
+
+        using var conn = GetConnection();
+        const string sql = @"
+            UPDATE invites
+            SET name = @Name,
+                phone = @Phone,
+                status = @Status
+            WHERE id = @Id";
+        conn.Execute(sql, invite);
+
+        return invite;
+    }
+
+    public bool Remove(Guid id)
+    {
+        using var conn = GetConnection();
+        const string sql = @"DELETE FROM invites WHERE id = @id";
+        var rows = conn.Execute(sql, new { id });
+        return rows > 0;
+    }
+}
 
 // =======================
 //     INVITES DTOs
@@ -766,6 +862,7 @@ public interface ISettingsRepository
     void SaveEvent(EventSettings settings);
 }
 
+/*
 public class FileSettingsRepository : ISettingsRepository
 {
     private readonly string _filePath;
@@ -834,5 +931,49 @@ public class FileSettingsRepository : ISettingsRepository
 
         var json = JsonSerializer.Serialize(_eventSettings, options);
         File.WriteAllText(_filePath, json, Encoding.UTF8);
+    }
+}
+*/
+public class DbSettingsRepository : ISettingsRepository
+{
+    private readonly string _connectionString;
+
+    public DbSettingsRepository(string connectionString)
+    {
+        _connectionString = connectionString;
+    }
+
+    private NpgsqlConnection GetConnection() => new(_connectionString);
+
+    public EventSettings? GetEvent()
+    {
+        using var conn = GetConnection();
+        const string sql = @"
+            SELECT
+                title,
+                subtitle,
+                description,
+                location,
+                date_text   AS ""DateText"",
+                image_url   AS ""ImageUrl""
+            FROM event_settings
+            WHERE id = 1";
+        return conn.QuerySingleOrDefault<EventSettings>(sql) ?? new EventSettings();
+    }
+
+    public void SaveEvent(EventSettings settings)
+    {
+        using var conn = GetConnection();
+        const string sql = @"
+            INSERT INTO event_settings (id, title, subtitle, description, location, date_text, image_url)
+            VALUES (1, @Title, @Subtitle, @Description, @Location, @DateText, @ImageUrl)
+            ON CONFLICT (id) DO UPDATE
+            SET title       = EXCLUDED.title,
+                subtitle    = EXCLUDED.subtitle,
+                description = EXCLUDED.description,
+                location    = EXCLUDED.location,
+                date_text   = EXCLUDED.date_text,
+                image_url   = EXCLUDED.image_url;";
+        conn.Execute(sql, settings);
     }
 }
