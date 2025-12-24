@@ -21,7 +21,7 @@ type EventInfo = {
 };
 
 const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL || "http://localhost:5158";
+  import.meta.env.VITE_API_BASE_URL || "https://weddingrm.onrender.com";
 
 const OrnamentDivider: React.FC = () => (
   <div className="flex items-center justify-center gap-4 my-4">

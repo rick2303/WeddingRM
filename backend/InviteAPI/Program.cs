@@ -8,13 +8,15 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using Npgsql;
 using Dapper;
+using CloudinaryDotNet;
+using CloudinaryDotNet.Actions;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // =======================
 //  Configuración de CORS
 // =======================
-var originsFromConfig = builder.Configuration["FrontendOrigins"]; 
+var originsFromConfig = builder.Configuration["FrontendOrigins"];
 
 var allowedOrigins = originsFromConfig?
     .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -403,6 +405,133 @@ app.MapPost("/api/public/invites/{token}/respond",
         return Results.Ok(invite.ToResponse());
     })
 .WithTags("Invites");
+
+var cloudConfig = builder.Configuration.GetSection("Cloudinary");
+var cloudName = cloudConfig["CloudName"];
+var apiKey = cloudConfig["ApiKey"];
+var apiSecret = cloudConfig["ApiSecret"];
+
+if (string.IsNullOrWhiteSpace(cloudName) || string.IsNullOrWhiteSpace(apiKey) || string.IsNullOrWhiteSpace(apiSecret))
+{
+    throw new Exception("Cloudinary credentials missing!");
+}
+
+var cloudinary = new Cloudinary(new Account(cloudName, apiKey, apiSecret));
+
+// Lista de conexiones SSE abiertas
+var sseClients = new List<HttpResponse>();
+
+app.MapGet("/api/photos/stream", async (HttpContext context) =>
+{
+    context.Response.Headers.Append("Content-Type", "text/event-stream");
+    context.Response.Headers.Append("Cache-Control", "no-cache");
+    context.Response.Headers.Append("Connection", "keep-alive");
+
+    lock (sseClients)
+    {
+        sseClients.Add(context.Response);
+    }
+
+    var tcs = new TaskCompletionSource<object?>();
+
+    context.RequestAborted.Register(() =>
+    {
+        tcs.TrySetResult(null);
+    });
+
+    try
+    {
+        // Espera hasta que el cliente cierre la conexión
+        await tcs.Task;
+    }
+    finally
+    {
+        lock (sseClients)
+        {
+            sseClients.Remove(context.Response);
+        }
+    }
+});
+
+
+// Función para notificar a todos los clientes SSE
+async Task NotifyAllClients(string message)
+{
+    List<HttpResponse> deadClients = new();
+    lock (sseClients)
+    {
+        foreach (var resp in sseClients)
+        {
+            try
+            {
+                resp.WriteAsync($"data: {message}\n\n");
+                resp.Body.FlushAsync();
+            }
+            catch
+            {
+                deadClients.Add(resp);
+            }
+        }
+
+        foreach (var dead in deadClients)
+            sseClients.Remove(dead);
+    }
+}
+
+// Endpoint para listar fotos
+app.MapGet("/api/photos", async () =>
+{
+    try
+    {
+        var result = cloudinary.Search()
+            .Expression("folder:Wedding-RM_Upload")
+            .SortBy("created_at", "desc")
+            .MaxResults(100)
+            .Execute();
+
+        var urls = result.Resources.Select(r => r.SecureUrl.ToString()).ToList();
+        return Results.Ok(urls);
+    }
+    catch (Exception ex)
+    {
+        return Results.Problem(ex.Message);
+    }
+});
+
+// Endpoint para subir fotos
+app.MapPost("/api/photos/upload", async (HttpRequest http) =>
+{
+    if (!http.HasFormContentType)
+        return Results.BadRequest(new { message = "Contenido inválido." });
+
+    var form = await http.ReadFormAsync();
+    var files = form.Files;
+
+    if (files.Count == 0)
+        return Results.BadRequest(new { message = "No se subió ningún archivo." });
+
+    var uploadedUrls = new List<string>();
+
+    foreach (var file in files)
+    {
+        if (file.Length == 0) continue;
+
+        await using var stream = file.OpenReadStream();
+        var uploadParams = new ImageUploadParams
+        {
+            File = new FileDescription(file.FileName, stream),
+            Folder = "Wedding-RM_Upload"
+        };
+
+        var uploadResult = await cloudinary.UploadAsync(uploadParams);
+        uploadedUrls.Add(uploadResult.SecureUrl.ToString());
+    }
+
+    // Notificar a todos los clientes SSE que hay nuevas fotos
+    await NotifyAllClients("new_photo");
+
+    return Results.Ok(uploadedUrls);
+});
 
 app.Run();
 
@@ -841,6 +970,36 @@ public static class InviteMappings
         };
     }
 }
+// =======================
+//  Photo Upload Observer
+// =======================
+public class PhotoUploadObserver : IObserver<string>
+{
+    private readonly HttpResponse _response;
+    private readonly TaskCompletionSource _tcs = new();
+
+    public Task Completion => _tcs.Task;
+
+    public PhotoUploadObserver(HttpResponse response)
+    {
+        _response = response;
+    }
+
+    public void OnCompleted() => _tcs.TrySetResult();
+
+    public void OnError(Exception error) => _tcs.TrySetException(error);
+
+    public void OnNext(string value)
+    {
+        if (_response.HasStarted)
+        {
+            var msg = $"data: {value}\n\n";
+            _response.WriteAsync(msg);
+            _response.Body.FlushAsync();
+        }
+    }
+}
+
 
 // =======================
 //  SETTINGS EVENT DOMAIN

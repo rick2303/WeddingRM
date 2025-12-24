@@ -11,7 +11,7 @@ import {
 import { useAuthStore } from "../store/authStore";
 
 const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL || "http://localhost:5158";
+  import.meta.env.VITE_API_BASE_URL || "https://weddingrm.onrender.com";
 
 type EditForm = {
   name: string;
